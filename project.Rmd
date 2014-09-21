@@ -1,0 +1,130 @@
+---
+title: "Practical Machine Learning Course Project"
+output: html_document
+---
+
+Setting up
+----------
+```{r setup}
+
+library(caret)
+library(e1071)
+library(doMC)
+library(rpart)
+registerDoMC(cores=2)
+
+
+setwd("~/software-projects/coursera")
+data<-read.csv("pml-training.csv")
+
+# test data for the submission part
+validate<-read.csv("pml-testing.csv")
+
+```
+
+Reducing the number of predictors
+---------------------------------
+First reduce the predictors by eliminating NA, empty and highly correlated ones
+```{r}
+# get rid of NA cols
+noNaCols<-data[,unlist(lapply(data, function(x)all(!is.na(x))))]
+
+# get rid of empty cols
+noEmptyCols<-noNaCols[,unlist(lapply(noNaCols, function(x)all(x!="")))]
+
+# get rid of irrelevant cols
+noIrrelevantCols<-noEmptyCols[,-(1:7)]
+
+# find correlated predictors with cutoff 0.95
+corrM <- cor(subset(noIrrelevantCols,select=-classe))
+highCorr <- findCorrelation(corrM, cutoff = .95) 
+
+# subset with less correlated predictors
+lessCorr<-noIrrelevantCols[,-highCorr]
+
+set.seed(1345)
+
+# First partition 70% for training %30 for testing
+inTrain <- createDataPartition(y = lessCorr$classe, p = 0.7, list = FALSE)
+training <- lessCorr[inTrain,]
+testing <- lessCorr[-inTrain, ]
+```
+
+More reducing the number of predictors
+--------------------------------------
+Since it takes a lot of time to train random forests on my machine I decided to reduce
+the predictors by training on a small subset of training data that is partitioned above
+
+```{r Selecting important predictors by using part of training data}
+# Second partition of the training variable above as a 10% for importance training %90 for real training
+inTrain2 <- createDataPartition(y = training$classe, p = 0.1, list = FALSE)
+impTraining <- training[inTrain2,]
+realTraining <- training[-inTrain2,]
+```
+
+
+```{r rf, cache=TRUE}
+# Doing a fast training on small subset to see important predictors
+set.seed(74342)
+rfControl <- trainControl(method = "cv", number = 10, allowParallel = TRUE)
+rfModel <-train(classe ~ ., method = "rf", data = impTraining, trainControl=rfControl, ntree=10)
+```
+
+Finding important variables
+--------------------------------------
+Now select to 25% of the most important variables using caret's varImp
+```{r topImportance}
+
+# using carets varImp function we get the important vars
+impVars <- varImp(rfModel)
+
+# find the importance quantity for the top 25% of variables
+varThresh<-quantile(impVars$importance[, 1], 0.75)
+
+# filter those variables less than the threshold
+topImportanceVars<-impVars$importance[, 1] >= varThresh
+
+# subset training with the important predictors ie. the 90% portion, for real training
+# note that we have %30 of the initially loaded data as test in the testing variable
+finalTraining<-realTraining[,topImportanceVars]
+```
+
+
+Train the final model
+---------------------
+Note that we are doing cross validation by using carets train control
+
+```{r rf_final, cache=TRUE}
+set.seed(54354)
+
+# it turns out that setting ntree to a low value is sufficient to get good prediction
+finalModel <-train(classe ~ ., method = "rf", data = finalTraining, trainControl=rfControl, ntree=50)
+```
+
+```{r prediction}
+pred<-predict(finalModel, testing)
+confusionMatrix(pred, testing$classe)
+
+```
+
+The accuracy seems to be pretty high
+
+Accuracy : 0.986         
+95% CI : (0.982, 0.989)
+
+For the submission part
+-----------------------
+
+```{r submission}
+answers<-predict(finalModel,validate)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+```
